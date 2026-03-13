@@ -13,27 +13,27 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], all
 
 @app.post("/aplicar_bordado/")
 async def aplicar_bordado(file: UploadFile = File(...), cores_selecionadas: str = Form(...)):
-    # 1. Converte a string de cores de volta para uma lista
     cores_hex = ast.literal_eval(cores_selecionadas)
-    
-    # Criamos um prompt que descreve todas as cores para a IA
-    descricao_cores = ", ".join(cores_hex)
-    
-    contents = await file.read()
-    
+    # Criamos um prompt ultra-descritivo focado em TEXTURA e IMPERFEIÇÃO
+    prompt_text = (
+        f"Extreme macro photo of a real physical embroidery patch, colors: {', '.join(cores_hex)}. "
+        "Thick satin stitch, visible interlocking polyester threads, high 3D embroidery relief, "
+        "rough thread edges, shiny silk texture, studio lighting with deep shadows between threads, "
+        "photorealistic, 8k, highly detailed textile machinery result, on heavy denim fabric background"
+    )
+
     try:
-        # Usamos o FLUX-FILL que é especialista em respeitar as cores originais 
-        # e adicionar textura realista por cima.
+        # Usando o modelo de DEPTH (Profundidade) para garantir o relevo 3D
         output = replicate.run(
-            "black-forest-labs/flux-fill",
+            "stability-ai/sdxl-controlnet-depth-paints-generator:af15086d", 
             input={
                 "image": file.file,
-                "prompt": f"Professional photorealistic embroidery patch. The colors {descricao_cores} are made of thick silk threads. Satin stitch texture, 3D relief, macro photography, visible thread fibers, studio lighting, on a canvas background.",
-                "negative_prompt": "plastic, flat, 2d, cartoon, drawing, blurry",
-                "guidance_scale": 25,
+                "prompt": prompt_text,
+                "negative_prompt": "flat, 2d, logo, vector, smooth, plastic, drawing, painting, blurry, thin lines, clean edges",
                 "num_inference_steps": 50,
-                "prompt_strength": 0.9,
-                "image_resolution": 768
+                "guidance_scale": 15,
+                "controlnet_conditioning_scale": 0.8, # Deixa a IA "vazar" um pouco a linha para parecer fio real
+                "strength": 0.9 # Força a IA a ignorar a textura lisa original
             }
         )
 
