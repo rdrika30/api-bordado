@@ -7,9 +7,8 @@ from sklearn.cluster import KMeans
 import uvicorn
 import ast
 
-app = FastAPI(title="API Bordado")
+app = FastAPI(title="API Bordado Pro")
 
-# Permite que o Netlify converse com o Render
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"], 
@@ -25,59 +24,65 @@ def hex_to_rgb(hex_color):
     hex_color = hex_color.lstrip('#')
     return tuple(int(hex_color[i:i+2], 16) for i in (0, 2, 4))
 
-def apply_stitch_effect(mask, color_rgb):
-    """
-    Simula um efeito de bordado realista com textura de fio e volume 3D.
-    """
-    h, w = mask.shape
+def gerar_fundo_tecido(h, w, cor_base=(230, 220, 210)):
+    """Gera uma textura que imita as tramas de um tecido canvas/sarja."""
+    fundo = np.full((h, w, 3), cor_base, dtype=np.uint8)
     
-    # 1. Cria a base com a cor escolhida
+    # Cria ruído aleatório
+    ruido = np.random.randint(0, 25, (h, w), dtype=np.uint8)
+    
+    # Estica o ruído na horizontal e vertical para criar a "trama"
+    kernel_h = np.ones((1, 5)) / 5
+    kernel_v = np.ones((5, 1)) / 5
+    trama_h = cv2.filter2D(ruido, -1, kernel_h)
+    trama_v = cv2.filter2D(ruido, -1, kernel_v)
+    
+    # Mistura as tramas
+    trama_tecido = cv2.addWeighted(trama_h, 0.5, trama_v, 0.5, 0)
+    trama_tecido = cv2.cvtColor(trama_tecido, cv2.COLOR_GRAY2RGB)
+    
+    # Escurece levemente o fundo com a trama
+    return cv2.subtract(fundo, trama_tecido)
+
+def apply_stitch_effect(mask, color_rgb):
+    """Simula o fio de bordado com ALTO VOLUME 3D."""
+    h, w = mask.shape
     base_color = np.zeros((h, w, 3), dtype=np.uint8)
     base_color[mask == 255] = color_rgb
 
-    # 2. Gera a textura dos fios (Ruído Direcional)
-    # Criamos um ruído aleatório e aplicamos um borrão para simular fios esticados
-    noise = np.random.randint(100, 200, (h, w), dtype=np.uint8)
-    k_size = 9 # Espessura do fio
-    kernel = np.eye(k_size) / k_size # Matriz diagonal para fios em ângulo
+    # Textura dos fios esticados
+    noise = np.random.randint(80, 220, (h, w), dtype=np.uint8)
+    kernel = np.eye(11) / 11 
     texture_gray = cv2.filter2D(noise, -1, kernel)
     texture_rgb = cv2.cvtColor(texture_gray, cv2.COLOR_GRAY2RGB)
-    
-    # Mistura a textura com a cor original (60% cor, 40% textura)
-    stitched = cv2.addWeighted(base_color, 0.7, texture_rgb, 0.3, 0)
+    stitched = cv2.addWeighted(base_color, 0.65, texture_rgb, 0.35, 0)
 
-    # 3. Cria o Volume 3D (Transformada de Distância)
-    # Deixa o centro da forma brilhante e as bordas escuras (onde a agulha fura o tecido)
+    # Volume 3D Extremo (Transformada de Distância)
     dist = cv2.distanceTransform(mask, cv2.DIST_L2, 5)
+    # Aumentamos a diferença de luz: 0.2 (borda bem escura) a 1.5 (centro bem iluminado)
+    cv2.normalize(dist, dist, 0.2, 1.5, cv2.NORM_MINMAX)
     
-    # Normaliza a distância para usar como um multiplicador de luz (de 0.3 a 1.2)
-    # 0.3 = borda escura, 1.2 = centro brilhante
-    cv2.normalize(dist, dist, 0.3, 1.2, cv2.NORM_MINMAX)
-    
-    # Aplica o brilho de volume na imagem texturizada
     result_float = np.zeros_like(stitched, dtype=np.float32)
     for i in range(3):
         result_float[:,:,i] = stitched[:,:,i] * dist
         
     result_3d = np.clip(result_float, 0, 255).astype(np.uint8)
 
-    # 4. Refina as bordas com micro-sombras (Sobel)
+    # Micro-sombras nos fios
     gray = cv2.cvtColor(result_3d, cv2.COLOR_RGB2GRAY)
     sobel_x = cv2.Sobel(gray, cv2.CV_64F, 1, 0, ksize=3)
     sobel_y = cv2.Sobel(gray, cv2.CV_64F, 0, 1, ksize=3)
     
-    emboss = (sobel_x + sobel_y) * 0.3 # Intensidade da sombra
-    emboss = np.clip(emboss, -40, 40).astype(np.int8)
+    emboss = (sobel_x + sobel_y) * 0.4
+    emboss = np.clip(emboss, -50, 50).astype(np.int8)
 
-    # Aplica a sombra final
     final_result = result_3d.astype(np.int16)
     for i in range(3):
         final_result[:,:,i] += emboss
         
     final_result = np.clip(final_result, 0, 255).astype(np.uint8)
-    
-    # Limpa tudo que estiver fora da máscara
     return cv2.bitwise_and(final_result, final_result, mask=mask)
+
 @app.post("/gerar_paleta/")
 async def gerar_paleta(file: UploadFile = File(...), num_cores: int = Form(5)):
     contents = await file.read()
@@ -104,7 +109,9 @@ async def aplicar_bordado(file: UploadFile = File(...), cores_selecionadas: str 
     img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
     
     h, w, _ = img_rgb.shape
-    imagem_final = np.full((h, w, 3), (230, 220, 200), dtype=np.uint8) # Fundo Bege
+    
+    # 1. Cria o fundo de tecido realista
+    imagem_final = gerar_fundo_tecido(h, w)
     
     for hex_color in cores_hex:
         rgb_target = np.array(hex_to_rgb(hex_color))
@@ -114,7 +121,22 @@ async def aplicar_bordado(file: UploadFile = File(...), cores_selecionadas: str 
         mask = cv2.inRange(img_rgb, lower_bound, upper_bound)
         mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, np.ones((3,3),np.uint8))
         
+        # 2. Gera o bordado com volume
         borda_processada = apply_stitch_effect(mask, rgb_target)
+        
+        # 3. GERA A SOMBRA PROJETADA (Drop Shadow)
+        # Borra a máscara para criar uma sombra suave
+        sombra_mask = cv2.GaussianBlur(mask, (15, 15), 0)
+        # Move a sombra 5 pixels para a direita e 8 para baixo
+        M = np.float32([[1, 0, 5], [0, 1, 8]])
+        sombra_mask = cv2.warpAffine(sombra_mask, M, (w, h))
+        
+        # Aplica a sombra escurecendo o fundo do tecido
+        fator_sombra = 1.0 - (sombra_mask / 255.0) * 0.6 # Escurece até 60%
+        for i in range(3):
+            imagem_final[:,:,i] = (imagem_final[:,:,i] * fator_sombra).astype(np.uint8)
+
+        # 4. Cola o bordado volumoso por cima de tudo
         idx = mask == 255
         imagem_final[idx] = borda_processada[idx]
 
