@@ -14,26 +14,31 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], all
 @app.post("/aplicar_bordado/")
 async def aplicar_bordado(file: UploadFile = File(...), cores_selecionadas: str = Form(...)):
     cores_hex = ast.literal_eval(cores_selecionadas)
-    # Criamos um prompt ultra-descritivo focado em TEXTURA e IMPERFEIÇÃO
-    prompt_text = (
-        f"Extreme macro photo of a real physical embroidery patch, colors: {', '.join(cores_hex)}. "
-        "Thick satin stitch, visible interlocking polyester threads, high 3D embroidery relief, "
-        "rough thread edges, shiny silk texture, studio lighting with deep shadows between threads, "
-        "photorealistic, 8k, highly detailed textile machinery result, on heavy denim fabric background"
+    
+    # O SEGREDO ESTÁ NESTE PROMPT ULTRA-DETALHADO
+    prompt_final = (
+        f"Macro photography of a physical custom embroidery patch. "
+        f"The logo colors ({', '.join(cores_hex)}) are made of thick, shiny trilobal polyester threads. "
+        "High-density satin stitching with visible directional thread paths. "
+        "Extreme 3D embossed relief, threads overlapping at the edges, micro-shadows between each stitch. "
+        "Slightly irregular borders showing individual thread fibers piercing a heavy blue denim fabric. "
+        "Professional studio lighting, 8k resolution, cinematic macro, hyper-realistic texture."
     )
 
     try:
-        # Usando o modelo de DEPTH (Profundidade) para garantir o relevo 3D
+        # Usando o FLUX.1 [DEV] - O modelo mais potente para texturas do mundo
         output = replicate.run(
-            "stability-ai/sdxl-controlnet-depth-paints-generator:af15086d", 
+            "black-forest-labs/flux-dev",
             input={
                 "image": file.file,
-                "prompt": prompt_text,
-                "negative_prompt": "flat, 2d, logo, vector, smooth, plastic, drawing, painting, blurry, thin lines, clean edges",
+                "prompt": prompt_final,
+                "control_image": file.file, # Força a IA a seguir a sua logo
+                "control_type": "canny",
+                "negative_prompt": "flat, 2d, vector, smooth, plastic, cartoon, drawing, clean edges, low quality",
+                "guidance_scale": 25.0, # Muita força no prompt
                 "num_inference_steps": 50,
-                "guidance_scale": 15,
-                "controlnet_conditioning_scale": 0.8, # Deixa a IA "vazar" um pouco a linha para parecer fio real
-                "strength": 0.9 # Força a IA a ignorar a textura lisa original
+                "extra_control": "canny",
+                "controlnet_conditioning_scale": 0.95 
             }
         )
 
