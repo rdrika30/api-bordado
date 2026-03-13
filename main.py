@@ -46,76 +46,59 @@ def gerar_fundo_tecido(h, w, cor_base=(230, 220, 210)):
 
 def apply_stitch_effect(mask, color_rgb):
     """
-    Simula PONTO CHEIO (Satin Stitch) PROFISSIONAL.
-    Os fios seguem a curvatura da forma, perpendiculares à borda.
+    Simula um preenchimento de bordado limpo, com trama diagonal 
+    e um chanfro (bevel) 3D realista nas bordas.
     """
     h, w = mask.shape
     
-    # === CONFIGURAÇÃO DO FIO ===
-    # Espessura visível do fio (em pixels). Diminua para fios mais finos.
-    # Como você achou grosso, mudei de 6 para 2.5 (muito mais fino).
-    espessura_fio = 2.5 
-    # === ==================== ===
-
-    # 1. Encontra o "esqueleto" (Medial Axis) da forma usando Distância Transform
-    dist = cv2.distanceTransform(mask, cv2.DIST_L2, 5)
-    
-    # 2. Calcula os Gradientes (Ângulo da forma)
-    # Suaviza um pouco para evitar ranhuras serrilhadas
-    dist_smooth = cv2.GaussianBlur(dist, (5, 5), 0)
-    # Calcula a derivada (variação) em X e Y para achar a direção
-    grad_x = cv2.Sobel(dist_smooth, cv2.CV_64F, 1, 0, ksize=3)
-    grad_y = cv2.Sobel(dist_smooth, cv2.CV_64F, 0, 1, ksize=3)
-    
-    # Converte os gradientes em ângulos (radianos)
-    # Isso nos diz para onde cada pixel da forma está "olhando"
-    angulos = np.arctan2(grad_y, grad_x)
-
-    # 3. Cria a Textura de Fios PERPENDICULARES à Curvatura
+    # 1. Textura Limpa (Linhas Diagonais Uniformes)
     y, x = np.mgrid[0:h, 0:w]
+    # Linhas em ângulo de 45 graus. O '6' dita a espessura da trama.
+    linhas = ((x + y) % 6) < 3
     
-    # Mágica matemática: Projetamos as coordenadas X e Y usando os ângulos calculados.
-    # Isso faz as linhas se curvarem seguindo a forma!
-    # O multiplicador controlado pela 'espessura_fio' define a frequência.
-    coordenada_curva = (x * np.cos(angulos) + y * np.sin(angulos)) / espessura_fio
+    # Pinta as linhas com um contraste suave (não tão agressivo quanto antes)
+    cor_base = np.array(color_rgb, dtype=np.int16)
+    cor_clara = np.clip(cor_base + 30, 0, 255).astype(np.uint8)
+    cor_escura = np.clip(cor_base - 30, 0, 255).astype(np.uint8)
     
-    # Cria o perfil cilíndrico senoidal dos fios nessa coordenada curva
-    perfil_fios = (np.sin(coordenada_curva) + 1) / 2.0 
+    stitched = np.zeros((h, w, 3), dtype=np.uint8)
+    stitched[linhas] = cor_clara
+    stitched[~linhas] = cor_escura
     
-    # 4. Pinta os fios calculando a luz e a sombra (Contraste Alto)
-    stitched = np.zeros((h, w, 3), dtype=np.float32)
-    cor_base = np.array(color_rgb, dtype=np.float32)
-    
-    for i in range(3):
-        # Aumentamos o brilho máximo para fios mais 'brilhantes'
-        intensidade_luz = 0.25 + (perfil_fios * 1.25) # Fundo escuro, topo brilhante
-        stitched[:,:,i] = cor_base[i] * intensidade_luz
+    # Adiciona um leve desfoque para as linhas se misturarem e parecerem tecido real
+    stitched = cv2.GaussianBlur(stitched, (3, 3), 0)
 
-    stitched = np.clip(stitched, 0, 255).astype(np.uint8)
-
-    # 5. Volume 3D Global (O "Gordinho" da letra inteira) - Mantido!
-    cv2.normalize(dist, dist, 0.6, 1.15, cv2.NORM_MINMAX)
+    # 2. Chanfro 3D (Bevel) nas bordas
+    # Em vez de curvar a letra toda como um tubo, curvamos apenas as bordas
+    dist = cv2.distanceTransform(mask, cv2.DIST_L2, 3)
     
+    # Limita o cálculo para focar só na borda (os primeiros 6 pixels de espessura)
+    bevel = np.clip(dist / 6.0, 0, 1.0) 
+    
+    # Escurece as bordas para simular a linha descendo para furar o tecido base
     result_float = np.zeros_like(stitched, dtype=np.float32)
     for i in range(3):
-        result_float[:,:,i] = stitched[:,:,i] * dist
+        # 0.4 na ponta extrema (escuro), 1.0 no interior (cor normal)
+        sombra_borda = 0.4 + (bevel * 0.6) 
+        result_float[:,:,i] = stitched[:,:,i] * sombra_borda
         
     result_3d = np.clip(result_float, 0, 255).astype(np.uint8)
 
-    # 6. Micro-sombras (Sobel) para ranhuras crocantes - Mantido!
+    # 3. Brilho direcional limpo (Luz batendo na textura)
     gray = cv2.cvtColor(result_3d, cv2.COLOR_RGB2GRAY)
-    sobel_x = cv2.Sobel(gray, cv2.CV_64F, 1, 0, ksize=3)
-    sobel_y = cv2.Sobel(gray, cv2.CV_64F, 0, 1, ksize=3)
+    grad_x = cv2.Sobel(gray, cv2.CV_64F, 1, 0, ksize=3)
+    grad_y = cv2.Sobel(gray, cv2.CV_64F, 0, 1, ksize=3)
     
-    emboss = (sobel_x + sobel_y) * 0.7 
-    emboss = np.clip(emboss, -60, 60).astype(np.int8)
+    # Somamos os gradientes para criar luz de um lado e sombra do outro
+    luz_direcional = (grad_x + grad_y) * 0.4
+    luz_direcional = np.clip(luz_direcional, -40, 40).astype(np.int8)
 
     final_result = result_3d.astype(np.int16)
     for i in range(3):
-        final_result[:,:,i] += emboss
+        final_result[:,:,i] += luz_direcional
         
     final_result = np.clip(final_result, 0, 255).astype(np.uint8)
-    
+
     return cv2.bitwise_and(final_result, final_result, mask=mask)    
     
 @app.post("/gerar_paleta/")
@@ -181,6 +164,7 @@ async def aplicar_bordado(file: UploadFile = File(...), cores_selecionadas: str 
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)
+
 
 
 
