@@ -46,54 +46,49 @@ def gerar_fundo_tecido(h, w, cor_base=(230, 220, 210)):
 
 def apply_stitch_effect(mask, color_rgb):
     """
-    Simula o fio de bordado curvo (Satin Stitch) lendo os ângulos da imagem.
+    Simula o fio de bordado curvo com textura ORGÂNICA e MICRO-FIBRAS.
     """
     h, w = mask.shape
     
-    # === 1. LEITURA DA CURVA (A MÁGICA) ===
-    # Calcula a distância até a borda
+    # 1. Leitura da Curva
     dist = cv2.distanceTransform(mask, cv2.DIST_L2, 5)
-    
-    # Suaviza MUITO o mapa de distância para os fios não quebrarem no meio da letra
     dist_blur = cv2.GaussianBlur(dist, (21, 21), 0)
     
-    # Calcula a direção da curva (Gradientes X e Y)
     grad_x = cv2.Sobel(dist_blur, cv2.CV_64F, 1, 0, ksize=5)
     grad_y = cv2.Sobel(dist_blur, cv2.CV_64F, 0, 1, ksize=5)
-    
-    # Transforma as direções X e Y em um Ângulo (em radianos) para cada pixel
     angulos = np.arctan2(grad_y, grad_x)
 
-    # === 2. DESENHANDO OS FIOS CURVOS ===
     y, x = np.mgrid[0:h, 0:w]
-    
-    # ESPESSURA DO FIO: Altere este número. Menor = mais fino, Maior = mais grosso
     espessura = 3.0 
-    
-    # Projeta as coordenadas no ângulo calculado. Isso encurva a matemática!
     fase_curva = (x * np.cos(angulos) + y * np.sin(angulos)) / espessura
     
-    # Cria o cilindro do fio (onda senoidal)
-    perfil_fios = (np.sin(fase_curva) + 1) / 2.0 
+    # === NOVIDADE: REALISMO DOS FIOS (IMPERFEIÇÕES ORGÂNICAS) ===
+    # A. Ondulação (quebra a perfeição do plástico)
+    ruido_matriz = np.random.rand(h, w).astype(np.float32)
+    ruido_ondulacao = cv2.GaussianBlur(ruido_matriz, (5, 5), 0) * 1.5
+    
+    # B. Micro-fibras (simula o fio retorcido multiplicando a fase)
+    micro_fibras = np.sin((fase_curva + ruido_ondulacao) * 4.0) * 0.2
+    
+    # C. Cilindro principal misturado com a ondulação
+    tubo_principal = np.sin(fase_curva + ruido_ondulacao)
+    
+    # Junta tudo e normaliza para gerar o perfil final da linha
+    perfil_fios = (tubo_principal + micro_fibras + 1.2) / 2.4 
+    # ============================================================
 
-    # === 3. APLICANDO COR E LUZ ===
+    # 3. Aplicando Cor e Luz (com brilho especular de poliéster)
     stitched = np.zeros((h, w, 3), dtype=np.float32)
     cor_base = np.array(color_rgb, dtype=np.float32)
     
     for i in range(3):
-        # Fresta escura (0.3) e topo do fio brilhante (1.2)
-        intensidade = 0.3 + (perfil_fios * 0.9)
+        # Aumentamos o contraste do brilho: frestas escuras (0.2), topo brilhante (1.3)
+        intensidade = 0.2 + (perfil_fios * 1.1)
         stitched[:,:,i] = cor_base[i] * intensidade
 
-    # Adiciona um ruído leve para dar textura de tecido e não de plástico
-    ruido = np.random.randint(0, 40, (h, w), dtype=np.uint8)
-    for i in range(3):
-        stitched[:,:,i] += ruido
-        
     stitched = np.clip(stitched, 0, 255).astype(np.uint8)
 
-    # === 4. VOLUME 3D GLOBAL (TRAVESSEIRO) ===
-    # Aproveitamos o mapa de distância original para dar volume à letra toda
+    # 4. Volume 3D Global (Travesseiro)
     cv2.normalize(dist, dist, 0.4, 1.3, cv2.NORM_MINMAX)
     
     result_float = np.zeros_like(stitched, dtype=np.float32)
@@ -102,12 +97,12 @@ def apply_stitch_effect(mask, color_rgb):
         
     result_3d = np.clip(result_float, 0, 255).astype(np.uint8)
 
-    # === 5. MICRO-SOMBRAS FINAIS ===
+    # 5. Micro-sombras Finais (Crocância acentuada para destacar a textura)
     gray = cv2.cvtColor(result_3d, cv2.COLOR_RGB2GRAY)
     sobel_x_final = cv2.Sobel(gray, cv2.CV_64F, 1, 0, ksize=3)
     sobel_y_final = cv2.Sobel(gray, cv2.CV_64F, 0, 1, ksize=3)
     
-    emboss = (sobel_x_final + sobel_y_final) * 0.5
+    emboss = (sobel_x_final + sobel_y_final) * 0.6
     emboss = np.clip(emboss, -50, 50).astype(np.int8)
 
     final_result = result_3d.astype(np.int16)
@@ -181,4 +176,5 @@ async def aplicar_bordado(file: UploadFile = File(...), cores_selecionadas: str 
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)
+
 
