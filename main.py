@@ -46,60 +46,59 @@ def gerar_fundo_tecido(h, w, cor_base=(230, 220, 210)):
 
 def apply_stitch_effect(mask, color_rgb):
     """
-    Simula um preenchimento de bordado limpo, com trama diagonal 
-    e um chanfro (bevel) 3D realista nas bordas.
+    Simula preenchimento de bordado "Soft-Relief" com fios senoidais suaves
+    e volume 3D global ('travesseiro').
     """
     h, w = mask.shape
     
-    # 1. Textura Limpa (Linhas Diagonais Uniformes)
+    # === PASSO 1: Fios Senoidais Suaves ===
+    # Geramos uma trama senoidal para evitar linhas retas e duras.
     y, x = np.mgrid[0:h, 0:w]
-    # Linhas em ângulo de 45 graus. O '6' dita a espessura da trama.
-    linhas = ((x + y) % 6) < 3
-    
-    # Pinta as linhas com um contraste suave (não tão agressivo quanto antes)
-    cor_base = np.array(color_rgb, dtype=np.int16)
-    cor_clara = np.clip(cor_base + 30, 0, 255).astype(np.uint8)
-    cor_escura = np.clip(cor_base - 30, 0, 255).astype(np.uint8)
+    # 'freq_fios' dita a espessura. Menor = mais grosso/suave.
+    freq_fios = 0.8
+    perfil_fios = (np.sin((x + y) * freq_fios) + 1) / 2.0 
     
     stitched = np.zeros((h, w, 3), dtype=np.uint8)
-    stitched[linhas] = cor_clara
-    stitched[~linhas] = cor_escura
+    cor_base = np.array(color_rgb, dtype=np.int16)
     
-    # Adiciona um leve desfoque para as linhas se misturarem e parecerem tecido real
-    stitched = cv2.GaussianBlur(stitched, (3, 3), 0)
-
-    # 2. Chanfro 3D (Bevel) nas bordas
-    # Em vez de curvar a letra toda como um tubo, curvamos apenas as bordas
-    dist = cv2.distanceTransform(mask, cv2.DIST_L2, 3)
+    # Calcula as cores para fios gordinhos e suaves (Soft Gloss)
+    for i in range(3):
+        # fresta profunda (0.35) a topo gordinho (1.2)
+        intensidade_luz = 0.35 + (perfil_fios * 0.85) 
+        stitched[:,:,i] = np.clip(cor_base[i] * intensidade_luz, 0, 255)
     
-    # Limita o cálculo para focar só na borda (os primeiros 6 pixels de espessura)
-    bevel = np.clip(dist / 6.0, 0, 1.0) 
+    # === PASSO 2: Volume 3D Global (Pillow Effect) ===
+    # Calcula a distância do centro da forma.
+    dist = cv2.distanceTransform(mask, cv2.DIST_L2, 5)
     
-    # Escurece as bordas para simular a linha descendo para furar o tecido base
+    # Normaliza a distância para usar como um multiplicador de luz (relevo).
+    # O centro fica mais alto e brilhante, as bordas mais baixas e escuras.
+    cv2.normalize(dist, dist, 0.45, 1.35, cv2.NORM_MINMAX) # Ampla faixa para relevo
+    
+    # Aplica o relevo 3D global na imagem texturizada
     result_float = np.zeros_like(stitched, dtype=np.float32)
     for i in range(3):
-        # 0.4 na ponta extrema (escuro), 1.0 no interior (cor normal)
-        sombra_borda = 0.4 + (bevel * 0.6) 
-        result_float[:,:,i] = stitched[:,:,i] * sombra_borda
+        result_float[:,:,i] = stitched[:,:,i] * dist
         
     result_3d = np.clip(result_float, 0, 255).astype(np.uint8)
 
-    # 3. Brilho direcional limpo (Luz batendo na textura)
+    # === PASSO 3: Micro-sombras e Crocância ===
+    # Melhora o contraste local para que os fios 'saltem' individualmente.
     gray = cv2.cvtColor(result_3d, cv2.COLOR_RGB2GRAY)
-    grad_x = cv2.Sobel(gray, cv2.CV_64F, 1, 0, ksize=3)
-    grad_y = cv2.Sobel(gray, cv2.CV_64F, 0, 1, ksize=3)
+    sobel_x = cv2.Sobel(gray, cv2.CV_64F, 1, 0, ksize=3)
+    sobel_y = cv2.Sobel(gray, cv2.CV_64F, 0, 1, ksize=3)
     
-    # Somamos os gradientes para criar luz de um lado e sombra do outro
-    luz_direcional = (grad_x + grad_y) * 0.4
-    luz_direcional = np.clip(luz_direcional, -40, 40).astype(np.int8)
+    emboss = (sobel_x + sobel_y) * 0.6 # Intensidade da crocância
+    emboss = np.clip(emboss, -60, 60).astype(np.int8)
 
     final_result = result_3d.astype(np.int16)
     for i in range(3):
-        final_result[:,:,i] += luz_direcional
+        final_result[:,:,i] += emboss
         
     final_result = np.clip(final_result, 0, 255).astype(np.uint8)
-
-    return cv2.bitwise_and(final_result, final_result, mask=mask)    
+    
+    # Limpa o que vazou da máscara
+    return cv2.bitwise_and(final_result, final_result, mask=mask)
     
 @app.post("/gerar_paleta/")
 async def gerar_paleta(file: UploadFile = File(...), num_cores: int = Form(5)):
@@ -164,6 +163,7 @@ async def aplicar_bordado(file: UploadFile = File(...), cores_selecionadas: str 
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)
+
 
 
 
