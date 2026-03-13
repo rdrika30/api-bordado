@@ -6,8 +6,9 @@ import numpy as np
 from sklearn.cluster import KMeans
 import uvicorn
 import ast
+import os
 
-app = FastAPI(title="API Bordado Pro")
+app = FastAPI(title="API Bordado Pro - Texturas Reais")
 
 app.add_middleware(
     CORSMiddleware,
@@ -24,66 +25,59 @@ def hex_to_rgb(hex_color):
     hex_color = hex_color.lstrip('#')
     return tuple(int(hex_color[i:i+2], 16) for i in (0, 2, 4))
 
-def gerar_fundo_tecido(h, w, cor_base=(230, 220, 210)):
-    """Gera uma textura que imita as tramas de um tecido canvas/sarja."""
-    fundo = np.full((h, w, 3), cor_base, dtype=np.uint8)
-    
-    # Cria ruído aleatório
-    ruido = np.random.randint(0, 25, (h, w), dtype=np.uint8)
-    
-    # Estica o ruído na horizontal e vertical para criar a "trama"
-    kernel_h = np.ones((1, 5)) / 5
-    kernel_v = np.ones((5, 1)) / 5
-    trama_h = cv2.filter2D(ruido, -1, kernel_h)
-    trama_v = cv2.filter2D(ruido, -1, kernel_v)
-    
-    # Mistura as tramas
-    trama_tecido = cv2.addWeighted(trama_h, 0.5, trama_v, 0.5, 0)
-    trama_tecido = cv2.cvtColor(trama_tecido, cv2.COLOR_GRAY2RGB)
-    
-    # Escurece levemente o fundo com a trama
-    return cv2.subtract(fundo, trama_tecido)
+def tile_texture(texture, target_h, target_w):
+    """Repete a textura (seamless) para cobrir toda a imagem."""
+    h, w = texture.shape[:2]
+    reps_y = int(np.ceil(target_h / h))
+    reps_x = int(np.ceil(target_w / w))
+    if len(texture.shape) == 3:
+        tiled = np.tile(texture, (reps_y, reps_x, 1))
+    else:
+        tiled = np.tile(texture, (reps_y, reps_x))
+    return tiled[:target_h, :target_w]
 
-def apply_stitch_effect(mask, color_rgb):
+def carregar_fundo(h, w):
+    """Carrega a foto real do tecido de fundo, ou gera um provisório."""
+    caminho = "fundo_tecido.jpg"
+    if os.path.exists(caminho):
+        fundo = cv2.imread(caminho, cv2.IMREAD_COLOR)
+        fundo = cv2.cvtColor(fundo, cv2.COLOR_BGR2RGB)
+        return tile_texture(fundo, h, w)
+    else:
+        # Fundo provisório bege se a imagem não existir
+        return np.full((h, w, 3), (230, 220, 210), dtype=np.uint8)
+
+def carregar_textura_fio(h, w):
+    """Carrega a foto real do fio (em preto e branco), ou gera provisória."""
+    caminho = "textura_fio.jpg"
+    if os.path.exists(caminho):
+        textura = cv2.imread(caminho, cv2.IMREAD_GRAYSCALE)
+        return tile_texture(textura, h, w)
+    else:
+        # Fio provisório com listras simples se a imagem não existir
+        y, x = np.mgrid[0:h, 0:w]
+        textura_temp = ((np.sin((x + y) * 0.5) + 1) * 127).astype(np.uint8)
+        return textura_temp
+
+def apply_stitch_effect(mask, color_rgb, textura_fio_gray):
     """
-    Simula o fio curvo com textura LISA e BRILHO ESPECULAR (efeito seda/poliéster).
-    Zero ruído grotesco.
+    Efeito Estilo Photoshop: Pinta a foto da textura e aplica Chanfro 3D.
     """
     h, w = mask.shape
     
-    # 1. Leitura da Curva (Mantida, pois funcionou bem)
-    dist = cv2.distanceTransform(mask, cv2.DIST_L2, 5)
-    dist_blur = cv2.GaussianBlur(dist, (21, 21), 0)
+    # 1. Multiplicação de Cor (Pinta a textura cinza com a cor escolhida)
+    # Transforma a textura de 0-255 para 0.0-1.0 para agir como um mapa de luz
+    tex_float = textura_fio_gray.astype(np.float32) / 255.0
     
-    grad_x = cv2.Sobel(dist_blur, cv2.CV_64F, 1, 0, ksize=5)
-    grad_y = cv2.Sobel(dist_blur, cv2.CV_64F, 0, 1, ksize=5)
-    angulos = np.arctan2(grad_y, grad_x)
-
-    # 2. Fios Limpos e Suaves
-    y, x = np.mgrid[0:h, 0:w]
-    espessura = 2.5 # Fios mais finos e delicados
-    fase_curva = (x * np.cos(angulos) + y * np.sin(angulos)) / espessura
-    
-    # Onda perfeitamente limpa (sem ruidos)
-    onda_base = (np.sin(fase_curva) + 1) / 2.0 
-    
-    # MÁGICA DO BRILHO: Elevamos a onda ao cubo. 
-    # Isso faz com que apenas o "topo" do fio reflita a luz forte, imitando seda.
-    brilho_especular = np.power(onda_base, 3)
-
-    # 3. Aplicando Cor e Luz Elegante
-    stitched = np.zeros((h, w, 3), dtype=np.float32)
-    cor_base = np.array(color_rgb, dtype=np.float32)
-    
+    stitched = np.zeros((h, w, 3), dtype=np.uint8)
     for i in range(3):
-        # 40% cor base + 40% volume do fio + 50% brilho estourado no topo
-        intensidade = 0.4 + (onda_base * 0.4) + (brilho_especular * 0.5)
-        stitched[:,:,i] = cor_base[i] * intensidade
+        # Multiplica a cor sólida pela luz/sombra da textura fotográfica
+        stitched[:,:,i] = np.clip(color_rgb[i] * tex_float, 0, 255)
 
-    stitched = np.clip(stitched, 0, 255).astype(np.uint8)
-
-    # 4. Volume 3D Global (Travesseiro)
-    cv2.normalize(dist, dist, 0.5, 1.2, cv2.NORM_MINMAX)
+    # 2. Efeito Chanfro e Entalhe (Bevel & Emboss do Photoshop)
+    dist = cv2.distanceTransform(mask, cv2.DIST_L2, 3)
+    # Borda mais escura (0.4) descendo para o tecido, centro normal (1.1)
+    cv2.normalize(dist, dist, 0.4, 1.1, cv2.NORM_MINMAX)
     
     result_float = np.zeros_like(stitched, dtype=np.float32)
     for i in range(3):
@@ -91,14 +85,13 @@ def apply_stitch_effect(mask, color_rgb):
         
     result_3d = np.clip(result_float, 0, 255).astype(np.uint8)
 
-    # 5. Micro-sombras MUITO sutis (só para separar os fios, sem sujar a imagem)
+    # 3. Micro-sombras para destacar as ranhuras da foto real
     gray = cv2.cvtColor(result_3d, cv2.COLOR_RGB2GRAY)
-    sobel_x_final = cv2.Sobel(gray, cv2.CV_64F, 1, 0, ksize=3)
-    sobel_y_final = cv2.Sobel(gray, cv2.CV_64F, 0, 1, ksize=3)
+    sobel_x = cv2.Sobel(gray, cv2.CV_64F, 1, 0, ksize=3)
+    sobel_y = cv2.Sobel(gray, cv2.CV_64F, 0, 1, ksize=3)
     
-    # Reduzi de 0.6 para 0.2. Nada de ranhuras duras agora!
-    emboss = (sobel_x_final + sobel_y_final) * 0.2
-    emboss = np.clip(emboss, -30, 30).astype(np.int8)
+    emboss = (sobel_x + sobel_y) * 0.3
+    emboss = np.clip(emboss, -40, 40).astype(np.int8)
 
     final_result = result_3d.astype(np.int16)
     for i in range(3):
@@ -107,7 +100,7 @@ def apply_stitch_effect(mask, color_rgb):
     final_result = np.clip(final_result, 0, 255).astype(np.uint8)
     
     return cv2.bitwise_and(final_result, final_result, mask=mask)
-    
+
 @app.post("/gerar_paleta/")
 async def gerar_paleta(file: UploadFile = File(...), num_cores: int = Form(5)):
     contents = await file.read()
@@ -135,8 +128,9 @@ async def aplicar_bordado(file: UploadFile = File(...), cores_selecionadas: str 
     
     h, w, _ = img_rgb.shape
     
-    # 1. Cria o fundo de tecido realista
-    imagem_final = gerar_fundo_tecido(h, w)
+    # PREPARAÇÃO DAS IMAGENS REAIS
+    imagem_final = carregar_fundo(h, w)
+    textura_fio_gray = carregar_textura_fio(h, w)
     
     for hex_color in cores_hex:
         rgb_target = np.array(hex_to_rgb(hex_color))
@@ -146,22 +140,19 @@ async def aplicar_bordado(file: UploadFile = File(...), cores_selecionadas: str 
         mask = cv2.inRange(img_rgb, lower_bound, upper_bound)
         mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, np.ones((3,3),np.uint8))
         
-        # 2. Gera o bordado com volume
-        borda_processada = apply_stitch_effect(mask, rgb_target)
+        # GERA O BORDADO USANDO A FOTO
+        borda_processada = apply_stitch_effect(mask, rgb_target, textura_fio_gray)
         
-        # 3. GERA A SOMBRA PROJETADA (Drop Shadow)
-        # Borra a máscara para criar uma sombra suave
+        # SOMBRA PROJETADA (Drop Shadow)
         sombra_mask = cv2.GaussianBlur(mask, (15, 15), 0)
-        # Move a sombra 5 pixels para a direita e 8 para baixo
         M = np.float32([[1, 0, 5], [0, 1, 8]])
         sombra_mask = cv2.warpAffine(sombra_mask, M, (w, h))
         
-        # Aplica a sombra escurecendo o fundo do tecido
-        fator_sombra = 1.0 - (sombra_mask / 255.0) * 0.6 # Escurece até 60%
+        fator_sombra = 1.0 - (sombra_mask / 255.0) * 0.7 # Sombra forte
         for i in range(3):
             imagem_final[:,:,i] = (imagem_final[:,:,i] * fator_sombra).astype(np.uint8)
 
-        # 4. Cola o bordado volumoso por cima de tudo
+        # COLA O BORDADO
         idx = mask == 255
         imagem_final[idx] = borda_processada[idx]
 
@@ -171,6 +162,3 @@ async def aplicar_bordado(file: UploadFile = File(...), cores_selecionadas: str 
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)
-
-
-
