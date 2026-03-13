@@ -6,9 +6,9 @@ import numpy as np
 from sklearn.cluster import KMeans
 import uvicorn
 import ast
-import os
+from typing import Optional
 
-app = FastAPI(title="API Bordado Pro - Texturas Reais")
+app = FastAPI(title="API Bordado Pro - Texturas Dinâmicas")
 
 app.add_middleware(
     CORSMiddleware,
@@ -36,47 +36,18 @@ def tile_texture(texture, target_h, target_w):
         tiled = np.tile(texture, (reps_y, reps_x))
     return tiled[:target_h, :target_w]
 
-def carregar_fundo(h, w):
-    """Carrega a foto real do tecido de fundo, ou gera um provisório."""
-    caminho = "fundo_tecido.jpg"
-    if os.path.exists(caminho):
-        fundo = cv2.imread(caminho, cv2.IMREAD_COLOR)
-        fundo = cv2.cvtColor(fundo, cv2.COLOR_BGR2RGB)
-        return tile_texture(fundo, h, w)
-    else:
-        # Fundo provisório bege se a imagem não existir
-        return np.full((h, w, 3), (230, 220, 210), dtype=np.uint8)
-
-def carregar_textura_fio(h, w):
-    """Carrega a foto real do fio (em preto e branco), ou gera provisória."""
-    caminho = "textura_fio.jpg"
-    if os.path.exists(caminho):
-        textura = cv2.imread(caminho, cv2.IMREAD_GRAYSCALE)
-        return tile_texture(textura, h, w)
-    else:
-        # Fio provisório com listras simples se a imagem não existir
-        y, x = np.mgrid[0:h, 0:w]
-        textura_temp = ((np.sin((x + y) * 0.5) + 1) * 127).astype(np.uint8)
-        return textura_temp
-
 def apply_stitch_effect(mask, color_rgb, textura_fio_gray):
-    """
-    Efeito Estilo Photoshop: Pinta a foto da textura e aplica Chanfro 3D.
-    """
+    """Aplica o efeito baseando-se na textura enviada."""
     h, w = mask.shape
     
-    # 1. Multiplicação de Cor (Pinta a textura cinza com a cor escolhida)
-    # Transforma a textura de 0-255 para 0.0-1.0 para agir como um mapa de luz
+    # 1. Multiplicação de Cor
     tex_float = textura_fio_gray.astype(np.float32) / 255.0
-    
     stitched = np.zeros((h, w, 3), dtype=np.uint8)
     for i in range(3):
-        # Multiplica a cor sólida pela luz/sombra da textura fotográfica
         stitched[:,:,i] = np.clip(color_rgb[i] * tex_float, 0, 255)
 
-    # 2. Efeito Chanfro e Entalhe (Bevel & Emboss do Photoshop)
+    # 2. Efeito Chanfro e Entalhe
     dist = cv2.distanceTransform(mask, cv2.DIST_L2, 3)
-    # Borda mais escura (0.4) descendo para o tecido, centro normal (1.1)
     cv2.normalize(dist, dist, 0.4, 1.1, cv2.NORM_MINMAX)
     
     result_float = np.zeros_like(stitched, dtype=np.float32)
@@ -85,7 +56,7 @@ def apply_stitch_effect(mask, color_rgb, textura_fio_gray):
         
     result_3d = np.clip(result_float, 0, 255).astype(np.uint8)
 
-    # 3. Micro-sombras para destacar as ranhuras da foto real
+    # 3. Micro-sombras
     gray = cv2.cvtColor(result_3d, cv2.COLOR_RGB2GRAY)
     sobel_x = cv2.Sobel(gray, cv2.CV_64F, 1, 0, ksize=3)
     sobel_y = cv2.Sobel(gray, cv2.CV_64F, 0, 1, ksize=3)
@@ -118,20 +89,40 @@ async def gerar_paleta(file: UploadFile = File(...), num_cores: int = Form(5)):
     return {"paleta": [rgb_to_hex(color) for color in colors]}
 
 @app.post("/aplicar_bordado/")
-async def aplicar_bordado(file: UploadFile = File(...), cores_selecionadas: str = Form(...)):
+async def aplicar_bordado(
+    file: UploadFile = File(...), 
+    cores_selecionadas: str = Form(...),
+    textura_fio: Optional[UploadFile] = File(None),
+    fundo_tecido: Optional[UploadFile] = File(None)
+):
     cores_hex = ast.literal_eval(cores_selecionadas)
     
     contents = await file.read()
     nparr = np.frombuffer(contents, np.uint8)
     img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
     img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-    
     h, w, _ = img_rgb.shape
     
-    # PREPARAÇÃO DAS IMAGENS REAIS
-    imagem_final = carregar_fundo(h, w)
-    textura_fio_gray = carregar_textura_fio(h, w)
-    
+    # PROCESSA O FUNDO ENVIADO PELO USUÁRIO (OU GERA UM BEGE PROVISÓRIO)
+    if fundo_tecido and fundo_tecido.filename:
+        conteudo_fundo = await fundo_tecido.read()
+        nparr_fundo = np.frombuffer(conteudo_fundo, np.uint8)
+        img_fundo = cv2.imdecode(nparr_fundo, cv2.IMREAD_COLOR)
+        img_fundo = cv2.cvtColor(img_fundo, cv2.COLOR_BGR2RGB)
+        imagem_final = tile_texture(img_fundo, h, w)
+    else:
+        imagem_final = np.full((h, w, 3), (230, 220, 210), dtype=np.uint8)
+
+    # PROCESSA A TEXTURA DE FIO ENVIADA (OU GERA UMA PROVISÓRIA)
+    if textura_fio and textura_fio.filename:
+        conteudo_fio = await textura_fio.read()
+        nparr_fio = np.frombuffer(conteudo_fio, np.uint8)
+        img_fio = cv2.imdecode(nparr_fio, cv2.IMREAD_GRAYSCALE)
+        textura_fio_gray = tile_texture(img_fio, h, w)
+    else:
+        y, x = np.mgrid[0:h, 0:w]
+        textura_fio_gray = ((np.sin((x + y) * 0.5) + 1) * 127).astype(np.uint8)
+
     for hex_color in cores_hex:
         rgb_target = np.array(hex_to_rgb(hex_color))
         lower_bound = np.clip(rgb_target - 30, 0, 255)
@@ -140,19 +131,16 @@ async def aplicar_bordado(file: UploadFile = File(...), cores_selecionadas: str 
         mask = cv2.inRange(img_rgb, lower_bound, upper_bound)
         mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, np.ones((3,3),np.uint8))
         
-        # GERA O BORDADO USANDO A FOTO
         borda_processada = apply_stitch_effect(mask, rgb_target, textura_fio_gray)
         
-        # SOMBRA PROJETADA (Drop Shadow)
+        # SOMBRA PROJETADA
         sombra_mask = cv2.GaussianBlur(mask, (15, 15), 0)
         M = np.float32([[1, 0, 5], [0, 1, 8]])
         sombra_mask = cv2.warpAffine(sombra_mask, M, (w, h))
-        
-        fator_sombra = 1.0 - (sombra_mask / 255.0) * 0.7 # Sombra forte
+        fator_sombra = 1.0 - (sombra_mask / 255.0) * 0.7 
         for i in range(3):
             imagem_final[:,:,i] = (imagem_final[:,:,i] * fator_sombra).astype(np.uint8)
 
-        # COLA O BORDADO
         idx = mask == 255
         imagem_final[idx] = borda_processada[idx]
 
