@@ -15,18 +15,16 @@ async def aplicar_bordado(file: UploadFile = File(...), cores_selecionadas: str 
     cor_nome = cores_hex[0] if cores_hex else "vibrant"
 
     try:
-        # Mudamos para um modelo mais robusto e detalhista
+        # Usando um modelo ESPECIALIZADO apenas em bordado real (SDXL Embroidery)
         output = replicate.run(
-            "lucataco/controlnet-canny-xl:67e163b2f29396e94924a1b023158c35b43615170362f6b8a8b16e45f9495140",
+            "fofr/sdxl-embroidery:16960f2746a51ed8148b046e7f10b75960098df90393699478f6c59b2d8f7602",
             input={
                 "image": file.file,
-                # PROMPT REFORMULADO PARA FOTORREALISMO EXTREMO
-                "prompt": f"RAW photo, extreme close-up macro of a real professional {cor_nome} embroidery patch, individual shiny polyester threads visible, high 3D relief, satin stitch texture, studio lighting with soft shadows, on a textured beige cotton canvas background, 8k uhd, high quality embroidery machine result, photorealistic, cinematic lighting",
-                "negative_prompt": "flat, 2d, cartoon, illustration, drawing, painting, blurry, low resolution, plastic texture, messy threads, out of focus, distorted shape",
-                "controlnet_conditioning_scale": 1.4, # Aumentado para manter sua logo perfeita
-                "guidance_scale": 12.0, # Aumentado para a IA seguir o prompt com mais força
-                "num_inference_steps": 40, # Mais passos = mais detalhes
-                "image_resolution": 768
+                "prompt": f"embroidery of {cor_nome} logo, detailed stitching, realistic threads, high relief, macro photography, 8k, on fabric background",
+                "negative_prompt": "low quality, blurry, flat, plastic, drawing",
+                "strength": 0.8, # Define o quanto a IA pode mudar a imagem para parecer fio
+                "guidance_scale": 7.5,
+                "num_inference_steps": 40
             }
         )
 
