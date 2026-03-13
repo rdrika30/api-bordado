@@ -45,22 +45,56 @@ def gerar_fundo_tecido(h, w, cor_base=(230, 220, 210)):
     return cv2.subtract(fundo, trama_tecido)
 
 def apply_stitch_effect(mask, color_rgb):
-    """Simula o fio de bordado com ALTO VOLUME 3D."""
+    """
+    Simula o fio de bordado curvo (Satin Stitch) lendo os ângulos da imagem.
+    """
     h, w = mask.shape
-    base_color = np.zeros((h, w, 3), dtype=np.uint8)
-    base_color[mask == 255] = color_rgb
-
-    # Textura dos fios esticados
-    noise = np.random.randint(80, 220, (h, w), dtype=np.uint8)
-    kernel = np.eye(11) / 11 
-    texture_gray = cv2.filter2D(noise, -1, kernel)
-    texture_rgb = cv2.cvtColor(texture_gray, cv2.COLOR_GRAY2RGB)
-    stitched = cv2.addWeighted(base_color, 0.65, texture_rgb, 0.35, 0)
-
-    # Volume 3D Extremo (Transformada de Distância)
+    
+    # === 1. LEITURA DA CURVA (A MÁGICA) ===
+    # Calcula a distância até a borda
     dist = cv2.distanceTransform(mask, cv2.DIST_L2, 5)
-    # Aumentamos a diferença de luz: 0.2 (borda bem escura) a 1.5 (centro bem iluminado)
-    cv2.normalize(dist, dist, 0.2, 1.5, cv2.NORM_MINMAX)
+    
+    # Suaviza MUITO o mapa de distância para os fios não quebrarem no meio da letra
+    dist_blur = cv2.GaussianBlur(dist, (21, 21), 0)
+    
+    # Calcula a direção da curva (Gradientes X e Y)
+    grad_x = cv2.Sobel(dist_blur, cv2.CV_64F, 1, 0, ksize=5)
+    grad_y = cv2.Sobel(dist_blur, cv2.CV_64F, 0, 1, ksize=5)
+    
+    # Transforma as direções X e Y em um Ângulo (em radianos) para cada pixel
+    angulos = np.arctan2(grad_y, grad_x)
+
+    # === 2. DESENHANDO OS FIOS CURVOS ===
+    y, x = np.mgrid[0:h, 0:w]
+    
+    # ESPESSURA DO FIO: Altere este número. Menor = mais fino, Maior = mais grosso
+    espessura = 3.0 
+    
+    # Projeta as coordenadas no ângulo calculado. Isso encurva a matemática!
+    fase_curva = (x * np.cos(angulos) + y * np.sin(angulos)) / espessura
+    
+    # Cria o cilindro do fio (onda senoidal)
+    perfil_fios = (np.sin(fase_curva) + 1) / 2.0 
+
+    # === 3. APLICANDO COR E LUZ ===
+    stitched = np.zeros((h, w, 3), dtype=np.float32)
+    cor_base = np.array(color_rgb, dtype=np.float32)
+    
+    for i in range(3):
+        # Fresta escura (0.3) e topo do fio brilhante (1.2)
+        intensidade = 0.3 + (perfil_fios * 0.9)
+        stitched[:,:,i] = cor_base[i] * intensidade
+
+    # Adiciona um ruído leve para dar textura de tecido e não de plástico
+    ruido = np.random.randint(0, 40, (h, w), dtype=np.uint8)
+    for i in range(3):
+        stitched[:,:,i] += ruido
+        
+    stitched = np.clip(stitched, 0, 255).astype(np.uint8)
+
+    # === 4. VOLUME 3D GLOBAL (TRAVESSEIRO) ===
+    # Aproveitamos o mapa de distância original para dar volume à letra toda
+    cv2.normalize(dist, dist, 0.4, 1.3, cv2.NORM_MINMAX)
     
     result_float = np.zeros_like(stitched, dtype=np.float32)
     for i in range(3):
@@ -68,12 +102,12 @@ def apply_stitch_effect(mask, color_rgb):
         
     result_3d = np.clip(result_float, 0, 255).astype(np.uint8)
 
-    # Micro-sombras nos fios
+    # === 5. MICRO-SOMBRAS FINAIS ===
     gray = cv2.cvtColor(result_3d, cv2.COLOR_RGB2GRAY)
-    sobel_x = cv2.Sobel(gray, cv2.CV_64F, 1, 0, ksize=3)
-    sobel_y = cv2.Sobel(gray, cv2.CV_64F, 0, 1, ksize=3)
+    sobel_x_final = cv2.Sobel(gray, cv2.CV_64F, 1, 0, ksize=3)
+    sobel_y_final = cv2.Sobel(gray, cv2.CV_64F, 0, 1, ksize=3)
     
-    emboss = (sobel_x + sobel_y) * 0.4
+    emboss = (sobel_x_final + sobel_y_final) * 0.5
     emboss = np.clip(emboss, -50, 50).astype(np.int8)
 
     final_result = result_3d.astype(np.int16)
@@ -81,8 +115,9 @@ def apply_stitch_effect(mask, color_rgb):
         final_result[:,:,i] += emboss
         
     final_result = np.clip(final_result, 0, 255).astype(np.uint8)
+    
     return cv2.bitwise_and(final_result, final_result, mask=mask)
-
+    
 @app.post("/gerar_paleta/")
 async def gerar_paleta(file: UploadFile = File(...), num_cores: int = Form(5)):
     contents = await file.read()
@@ -146,3 +181,4 @@ async def aplicar_bordado(file: UploadFile = File(...), cores_selecionadas: str 
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)
+
