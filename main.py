@@ -45,41 +45,56 @@ def gerar_fundo_tecido(h, w, cor_base=(230, 220, 210)):
     return cv2.subtract(fundo, trama_tecido)
 
 def apply_stitch_effect(mask, color_rgb):
-    """Simula o fio de bordado com fios CILÍNDRICOS e alto contraste."""
+    """
+    Simula PONTO CHEIO (Satin Stitch) PROFISSIONAL.
+    Os fios seguem a curvatura da forma, perpendiculares à borda.
+    """
     h, w = mask.shape
     
-    # 1. Cria o perfil cilíndrico dos fios usando uma Onda Senoidal (Sine wave)
+    # === CONFIGURAÇÃO DO FIO ===
+    # Espessura visível do fio (em pixels). Diminua para fios mais finos.
+    # Como você achou grosso, mudei de 6 para 2.5 (muito mais fino).
+    espessura_fio = 2.5 
+    # === ==================== ===
+
+    # 1. Encontra o "esqueleto" (Medial Axis) da forma usando Distância Transform
+    dist = cv2.distanceTransform(mask, cv2.DIST_L2, 5)
+    
+    # 2. Calcula os Gradientes (Ângulo da forma)
+    # Suaviza um pouco para evitar ranhuras serrilhadas
+    dist_smooth = cv2.GaussianBlur(dist, (5, 5), 0)
+    # Calcula a derivada (variação) em X e Y para achar a direção
+    grad_x = cv2.Sobel(dist_smooth, cv2.CV_64F, 1, 0, ksize=3)
+    grad_y = cv2.Sobel(dist_smooth, cv2.CV_64F, 0, 1, ksize=3)
+    
+    # Converte os gradientes em ângulos (radianos)
+    # Isso nos diz para onde cada pixel da forma está "olhando"
+    angulos = np.arctan2(grad_y, grad_x)
+
+    # 3. Cria a Textura de Fios PERPENDICULARES à Curvatura
     y, x = np.mgrid[0:h, 0:w]
     
-    # Esta variável controla a espessura do fio. Menor = mais grosso. Maior = mais fino.
-    frequencia_fios = 1.2 
+    # Mágica matemática: Projetamos as coordenadas X e Y usando os ângulos calculados.
+    # Isso faz as linhas se curvarem seguindo a forma!
+    # O multiplicador controlado pela 'espessura_fio' define a frequência.
+    coordenada_curva = (x * np.cos(angulos) + y * np.sin(angulos)) / espessura_fio
     
-    # Cria o formato do tubo (valores de 0.0 na fresta a 1.0 no topo do fio)
-    perfil_fios = (np.sin((x + y) * frequencia_fios) + 1) / 2.0 
+    # Cria o perfil cilíndrico senoidal dos fios nessa coordenada curva
+    perfil_fios = (np.sin(coordenada_curva) + 1) / 2.0 
     
-    # 2. Pinta os fios calculando a luz e a sombra
+    # 4. Pinta os fios calculando a luz e a sombra (Contraste Alto)
     stitched = np.zeros((h, w, 3), dtype=np.float32)
     cor_base = np.array(color_rgb, dtype=np.float32)
     
     for i in range(3):
-        # A fresta fica com 30% da cor (escura) e o topo com 130% da cor (brilho forte)
-        intensidade_luz = 0.3 + (perfil_fios * 1.0)
+        # Aumentamos o brilho máximo para fios mais 'brilhantes'
+        intensidade_luz = 0.25 + (perfil_fios * 1.25) # Fundo escuro, topo brilhante
         stitched[:,:,i] = cor_base[i] * intensidade_luz
 
-    # Adiciona micro-fibras (ruído direcional) para não parecer plástico
-    ruido = np.random.randn(h, w) * 15 
-    kernel = np.eye(5) / 5 
-    ruido_direcional = cv2.filter2D(ruido, -1, kernel)
-    
-    for i in range(3):
-        stitched[:,:,i] += ruido_direcional
-        
     stitched = np.clip(stitched, 0, 255).astype(np.uint8)
 
-    # 3. Volume 3D Global (O "Gordinho" da letra inteira)
-    dist = cv2.distanceTransform(mask, cv2.DIST_L2, 5)
-    # Suavizamos o brilho central para não ofuscar os fios individuais
-    cv2.normalize(dist, dist, 0.5, 1.1, cv2.NORM_MINMAX)
+    # 5. Volume 3D Global (O "Gordinho" da letra inteira) - Mantido!
+    cv2.normalize(dist, dist, 0.6, 1.15, cv2.NORM_MINMAX)
     
     result_float = np.zeros_like(stitched, dtype=np.float32)
     for i in range(3):
@@ -87,14 +102,13 @@ def apply_stitch_effect(mask, color_rgb):
         
     result_3d = np.clip(result_float, 0, 255).astype(np.uint8)
 
-    # 4. Micro-sombras (Sobel) com contraste AUMENTADO para os fios saltarem
+    # 6. Micro-sombras (Sobel) para ranhuras crocantes - Mantido!
     gray = cv2.cvtColor(result_3d, cv2.COLOR_RGB2GRAY)
     sobel_x = cv2.Sobel(gray, cv2.CV_64F, 1, 0, ksize=3)
     sobel_y = cv2.Sobel(gray, cv2.CV_64F, 0, 1, ksize=3)
     
-    # Aumentei o multiplicador de 0.5 para 0.8. Isso vai deixar as ranhuras super definidas!
-    emboss = (sobel_x + sobel_y) * 0.8 
-    emboss = np.clip(emboss, -70, 70).astype(np.int8)
+    emboss = (sobel_x + sobel_y) * 0.7 
+    emboss = np.clip(emboss, -60, 60).astype(np.int8)
 
     final_result = result_3d.astype(np.int16)
     for i in range(3):
@@ -102,7 +116,7 @@ def apply_stitch_effect(mask, color_rgb):
         
     final_result = np.clip(final_result, 0, 255).astype(np.uint8)
     
-    return cv2.bitwise_and(final_result, final_result, mask=mask)   
+    return cv2.bitwise_and(final_result, final_result, mask=mask)    
     
 @app.post("/gerar_paleta/")
 async def gerar_paleta(file: UploadFile = File(...), num_cores: int = Form(5)):
@@ -167,5 +181,6 @@ async def aplicar_bordado(file: UploadFile = File(...), cores_selecionadas: str 
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)
+
 
 
